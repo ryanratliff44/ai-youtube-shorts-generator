@@ -56,9 +56,26 @@ def youtube_upload(path: str, title: str, description: str, tags: list[str],
         return json.load(r)["id"]
 
 
+def posts_last_24h(log: str, target: str) -> int:
+    p = Path(log)
+    if not p.is_file():
+        return 0
+    cutoff = time.time() - 86400
+    n = 0
+    for line in p.read_text().splitlines():
+        if line.strip():
+            r = json.loads(line)
+            if r.get("target") == target and not r.get("dry_run") and r["ts"] >= cutoff:
+                n += 1
+    return n
+
+
 def publish(path: str, title: str, description: str, tags: list[str],
             target: str = "youtube", privacy: str = "private", dry_run: bool = True,
-            log: str = "posted.jsonl") -> dict:
+            log: str = "posted.jsonl", daily_cap: int = 3) -> dict:
+    """Quota governor: refuses real uploads past `daily_cap` per platform per 24h."""
+    if not dry_run and posts_last_24h(log, target) >= daily_cap:
+        raise RuntimeError(f"daily cap of {daily_cap} {target} uploads reached")
     rec = {"file": path, "title": title, "target": target, "privacy": privacy,
            "dry_run": dry_run, "ts": int(time.time())}
     if not dry_run:

@@ -5,7 +5,9 @@ import pytest
 
 from shorts_generator.gta.captions import words_to_ass
 from shorts_generator.gta.highlights import find_highlights, pick_windows
+from shorts_generator.gta.ledger import add_source, require_source
 from shorts_generator.gta.publish import publish
+from shorts_generator.gta.__main__ import main as cli
 from shorts_generator.gta.render import render_clip
 
 
@@ -66,3 +68,38 @@ def test_publish_dry_run_logs_and_never_calls_network(tmp_path):
 def test_unapproved_platforms_refuse_real_upload(tmp_path):
     with pytest.raises(NotImplementedError):
         publish("x.mp4", "t", "d", [], "tiktok", dry_run=False, log=str(tmp_path / "p.jsonl"))
+
+
+def test_ledger_blocks_unregistered_and_requires_note(tmp_path, video):
+    led = str(tmp_path / "s.jsonl")
+    with pytest.raises(PermissionError):
+        require_source(led, video)
+    with pytest.raises(ValueError):
+        add_source(led, video, "written_permission")  # no note
+    add_source(led, video, "own_capture")
+    assert require_source(led, video)["kind"] == "own_capture"
+
+
+def test_daily_cap_blocks_extra_uploads(tmp_path):
+    log = tmp_path / "p.jsonl"
+    import time
+    log.write_text("".join(json.dumps({"target": "youtube", "dry_run": False,
+                                       "ts": int(time.time())}) + "\n" for _ in range(2)))
+    with pytest.raises(RuntimeError):
+        publish("x.mp4", "t", "d", [], "youtube", dry_run=False, log=str(log), daily_cap=2)
+
+
+def test_full_gate_flow(video, tmp_path):
+    led, out = str(tmp_path / "s.jsonl"), str(tmp_path / "clips")
+    # unregistered footage is refused
+    with pytest.raises(PermissionError):
+        cli(["--ledger", led, "run", video, "--n", "1", "--length", "20", "--out", out])
+    cli(["--ledger", led, "source", "add", video, "--kind", "own_capture"])
+    cli(["--ledger", led, "run", video, "--n", "1", "--length", "20", "--out", out])
+    # nothing approved -> nothing publishes
+    cli(["--ledger", led, "publish", out, "--to", "youtube"])
+    assert not (tmp_path / "clips" / "posted.jsonl").exists()
+    cli(["--ledger", led, "approve", out, "1"])
+    cli(["--ledger", led, "publish", out, "--to", "youtube"])
+    rec = json.loads((tmp_path / "clips" / "posted.jsonl").read_text())
+    assert rec["dry_run"] and rec["privacy"] == "private"
